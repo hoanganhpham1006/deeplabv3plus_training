@@ -220,7 +220,7 @@ class SegModel:
         self.crop = False
             
     
-    def create_seg_model(self, net, n=183, backbone='mobilenetv2', load_weights=False, multi_gpu=False):
+    def create_seg_model(self, net, n=183, backbone='mobilenetv2', load_weights=False, multi_gpu=True):
         
         '''
         Net is:
@@ -260,8 +260,9 @@ class SegModel:
             model.load_weights('{}_{}.h5'.format(backbone, net))
 
         if multi_gpu:
-            from keras.utils import multi_gpu_model
-            model = multi_gpu_model(model, gpus = len(get_available_gpus()))
+            print("Multi GPU Mode activated")
+        #     from tensorflow.keras.utils import multi_gpu_model
+        #     model = multi_gpu_model(model, gpus = len(get_available_gpus()))
             
         self.model = model
         return model
@@ -501,7 +502,7 @@ def build_callbacks(tf_board = False):
 if __name__ == '__main__':
 
     image_size = (256, 256) #(512,512) (720, 1280)
-    bs = 8
+    bs = 16
 
     better_model = False
     load_pretrained_weights = False
@@ -523,22 +524,24 @@ if __name__ == '__main__':
     print('Image size:', image_size)
     print('Batch size:', bs)
 
+    tf.debugging.set_log_device_placement(True)
+    strategy = tf.distribute.MirroredStrategy()
+    with strategy.scope():
+        SegClass = SegModel(PATH, image_size)
+        SegClass.set_batch_size(bs)
 
-    SegClass = SegModel(PATH, image_size)
-    SegClass.set_batch_size(bs)
+        if better_model:
+            model = SegClass.create_seg_model(net='subpixel', n=n_classes, \
+                                            multi_gpu=True, backbone=backbone)
+        else:
+            model = SegClass.create_seg_model(net='original', n=n_classes,\
+                                            multi_gpu=True, backbone=backbone)
 
-    if better_model:
-        model = SegClass.create_seg_model(net='subpixel', n=n_classes, \
-                                        multi_gpu=False, backbone=backbone)
-    else:
-        model = SegClass.create_seg_model(net='original', n=n_classes,\
-                                        multi_gpu=False, backbone=backbone)
-
-    # model.load_weights(SegClass.modelpath)
-    # model.summary()
-    model.compile(optimizer = Adam(lr=1e-3, epsilon=1e-8, decay=1e-6), sample_weight_mode = "temporal",
-                loss = losses, metrics = metrics)
-    print('Weights path:', SegClass.modelpath)
+        # model.load_weights(SegClass.modelpath)
+        # model.summary()
+        model.compile(optimizer = Adam(lr=1e-3, epsilon=1e-8, decay=1e-6), sample_weight_mode = "temporal",
+                    loss = losses, metrics = metrics)
+        print('Weights path:', SegClass.modelpath)
 
     # train_generator = SegClass.create_generators(blur=5,crop_shape=None, mode='train_1', n_classes=n_classes,
     #                                              horizontal_flip=True, vertical_flip=False, brightness=0.3, 
@@ -568,11 +571,10 @@ if __name__ == '__main__':
 
     NUM_TRAINING_PART = 8
 
-    for i in range(2, 100):
+    for i in range(100):
         print("Loading training part " + str(i%NUM_TRAINING_PART + 1))
         train_generator = SegClass.create_generators(blur=5,crop_shape=None, mode='train_' + str(i%NUM_TRAINING_PART + 1), n_classes=n_classes,
                                                     horizontal_flip=True, vertical_flip=False, brightness=0.3, 
                                                     rotation=False, zoom=0.1, validation_split=.15, seed=7, do_ahisteq=False)
         SegClass.set_num_epochs(2)
         history = SegClass.train_generator(model, train_generator, valid_generator, callbacks, mp = True)
-
