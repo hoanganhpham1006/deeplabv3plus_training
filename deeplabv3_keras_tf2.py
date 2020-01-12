@@ -227,9 +227,8 @@ class SegModel:
         1. original deeplab v3+
         2. original deeplab v3+ and subpixel upsampling layer
         '''
-        
         model = Deeplabv3(weights='pascal_voc', input_shape=self.sz + (3,), classes=n,
-                          backbone=backbone, OS=16)
+                        backbone=backbone, OS=16)
         
         base_model = Model(model.input, model.layers[-5].output)
         self.net = net
@@ -261,8 +260,8 @@ class SegModel:
 
         if multi_gpu:
             print("Multi GPU Mode activated")
-        #     from tensorflow.keras.utils import multi_gpu_model
-        #     model = multi_gpu_model(model, gpus = len(get_available_gpus()))
+            # from tensorflow.keras.utils import multi_gpu_model
+            # model = multi_gpu_model(model, gpus = 2)
             
         self.model = model
         return model
@@ -330,12 +329,10 @@ class SegmentationGenerator(Sequence):
         
         # if mode == 'test':
         #     self.image_path_list = sorted(glob.glob(os.path.join(folder, 'JPEGImages', 'test', '*')))[:100]
-        if mode[:5]=='train':
-            part = mode.split('_')[1]
-            self.image_list, self.label_list = map(list, zip(*pickle.load(open(os.path.join(folder, 'train_images_' + str(part) + '_255.pkl'), 'rb'))))
+        if mode=='train':
+            self.image_list, self.label_list = map(list, zip(*pickle.load(open(os.path.join(folder, 'train_images_1_255.pkl'), 'rb'))))
         else:
             self.image_list, self.label_list = map(list, zip(*pickle.load(open(os.path.join(folder, 'val_images_255.pkl'), 'rb'))))
-
         self.mode = mode
         self.n_classes = n_classes
         self.batch_size = batch_size
@@ -346,6 +343,9 @@ class SegmentationGenerator(Sequence):
         self.brightness = brightness
         self.rotation = rotation
         self.zoom = zoom
+        self.part = 0
+        self.num_training_part = 8
+        self.folder = folder
         # Preallocate memory
         if self.crop_shape:
             self.X = np.zeros((batch_size, crop_shape[1], crop_shape[0], 3), dtype='float32')
@@ -463,13 +463,17 @@ class SegmentationGenerator(Sequence):
         return self.X, self.Y, sample_dict
         
     def on_epoch_end(self):
-        # Shuffle dataset for next epoch
-        # c = list(zip(self.image_path_list, self.label_path_list))
-        c = list(zip(self.image_list, self.label_list))
-        random.shuffle(c)
-        # self.image_path_list, self.label_path_list = zip(*c)
-        self.image_list, self.label_list = zip(*c)
-                
+        self.part += 1
+        if self.mode =='train':
+            del self.image_list, self.label_list
+            print("\nTRAINING ON PART " + str(self.part%self.num_training_part + 1))
+            self.image_list, self.label_list = map(list, zip(*pickle.load(open(os.path.join(self.folder, 'train_images_' + str(self.part%self.num_training_part + 1) + '_255.pkl'), 'rb'))))
+        else:
+            # c = list(zip(self.image_path_list, self.label_path_list))
+            c = list(zip(self.image_list, self.label_list))
+            random.shuffle(c)
+            # self.image_path_list, self.label_path_list = zip(*c)
+            self.image_list, self.label_list = zip(*c)
     
 def _random_crop(image, label, crop_shape):
     if (image.shape[0] != label.shape[0]) or (image.shape[1] != label.shape[1]):
@@ -502,7 +506,7 @@ def build_callbacks(tf_board = False):
 if __name__ == '__main__':
 
     image_size = (256, 256) #(512,512) (720, 1280)
-    bs = 16
+    bs = 20
 
     better_model = False
     load_pretrained_weights = False
@@ -523,13 +527,11 @@ if __name__ == '__main__':
     print('N classes:', n_classes)
     print('Image size:', image_size)
     print('Batch size:', bs)
-
-    tf.debugging.set_log_device_placement(True)
-    strategy = tf.distribute.MirroredStrategy()
-    with strategy.scope():
+    mirrored_strategy = tf.distribute.MirroredStrategy()
+    with mirrored_strategy.scope():
         SegClass = SegModel(PATH, image_size)
         SegClass.set_batch_size(bs)
-
+        
         if better_model:
             model = SegClass.create_seg_model(net='subpixel', n=n_classes, \
                                             multi_gpu=True, backbone=backbone)
@@ -568,13 +570,15 @@ if __name__ == '__main__':
 
 
     callbacks = build_callbacks(tf_board = False)
-
-    NUM_TRAINING_PART = 8
-
-    for i in range(100):
-        print("Loading training part " + str(i%NUM_TRAINING_PART + 1))
-        train_generator = SegClass.create_generators(blur=5,crop_shape=None, mode='train_' + str(i%NUM_TRAINING_PART + 1), n_classes=n_classes,
-                                                    horizontal_flip=True, vertical_flip=False, brightness=0.3, 
-                                                    rotation=False, zoom=0.1, validation_split=.15, seed=7, do_ahisteq=False)
-        SegClass.set_num_epochs(2)
-        history = SegClass.train_generator(model, train_generator, valid_generator, callbacks, mp = True)
+    # for i in range(100):
+    #     print("Loading training part " + str(i%NUM_TRAINING_PART + 1))
+    #     train_generator = SegClass.create_generators(blur=5,crop_shape=None, mode='train_' + str(i%NUM_TRAINING_PART + 1), n_classes=n_classes,
+    #                                                 horizontal_flip=True, vertical_flip=False, brightness=0.3, 
+    #                                                 rotation=False, zoom=0.1, validation_split=.15, seed=7, do_ahisteq=False)
+    #     SegClass.set_num_epochs(2)
+    #     history = SegClass.train_generator(model, train_generator, valid_generator, callbacks, mp = True)
+    train_generator = SegClass.create_generators(blur=5,crop_shape=None, mode='train', n_classes=n_classes,
+                                                horizontal_flip=True, vertical_flip=False, brightness=0.3, 
+                                                rotation=False, zoom=0.1, validation_split=.15, seed=7, do_ahisteq=False)
+    SegClass.set_num_epochs(1000)
+    history = SegClass.train_generator(model, train_generator, valid_generator, callbacks, mp = False)
