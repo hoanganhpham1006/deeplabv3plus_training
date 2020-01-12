@@ -306,6 +306,103 @@ class SegModel:
     def set_batch_size(cls, new_batch_size):
         cls.batch_size = new_batch_size
 
+def image_batch_generator(images, gt_images, batch_size, mode='train'):
+    while True:
+        batch_paths = np.random.choice(a=len(images), size=batch_size)
+        
+        for i in batch_paths:
+            image = images[i]
+            label = gt_images[i]
+            if mode == 'train':
+                horizontal_flip=True
+                blur = 0,
+                vertical_flip=0
+                brightness=0.1
+                rotation=5.0
+                zoom=0.1
+                do_ahisteq = True
+                
+                n = i
+
+                labels = np.unique(label)
+                if blur and random.randint(0,1):
+                    image = cv2.GaussianBlur(image, (blur, blur), 0)
+                    
+                # Do augmentation
+                if horizontal_flip and random.randint(0,1):
+                    image = cv2.flip(image, 1)
+                    label = cv2.flip(label, 1)
+                if vertical_flip and random.randint(0,1):
+                    image = cv2.flip(image, 0)
+                    label = cv2.flip(label, 0)
+                if brightness:
+                    factor = 1.0 + random.gauss(mu=0.0, sigma=brightness)
+                    if random.randint(0,1):
+                        factor = 1.0/factor
+                    table = np.array([((i / 255.0) ** factor) * 255 for i in np.arange(0, 256)]).astype(np.uint8)
+                    image = cv2.LUT(image, table)
+                if rotation:
+                    angle = random.gauss(mu=0.0, sigma=rotation)
+                else:
+                    angle = 0.0
+                if zoom:
+                    scale = random.gauss(mu=1.0, sigma=zoom)
+                else:
+                    scale = 1.0
+                if rotation or zoom:
+                    M = cv2.getRotationMatrix2D((image.shape[1]//2, image.shape[0]//2), angle, scale)
+                    image = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]))
+                    label = cv2.warpAffine(label, M, (label.shape[1], label.shape[0]))
+
+                if histeq: # and convert to RGB
+                    img_yuv = cv2.cvtColor(image, cv2.COLOR_BGR2YUV)
+                    img_yuv[:,:,0] = clahe.apply(img_yuv[:,:,0])
+                    image = cv2.cvtColor(img_yuv, cv2.COLOR_YUV2BGR) # to BGR
+                        
+            label = label.astype('int32')
+            for j in np.setxor1d(np.unique(label), labels):
+                label[label==j] = NUM
+            
+            y = label.flatten()
+            y[y>(n_classes-1)]=n_classes
+                            
+            Y[n]  = np.expand_dims(y, -1)
+            F[n]  = (Y[n]!=0).astype('float32') # get all pixels that aren't background
+            valid_pixels = F[n][Y[n]!=n_classes] # get all pixels (bg and foregroud) that aren't void
+            u_classes = np.unique(valid_pixels)
+            class_weights = class_weight.compute_class_weight('balanced', u_classes, valid_pixels)
+            class_weights = {class_id : w for class_id, w in zip(u_classes, class_weights)}
+            if len(class_weights)==1: # no bg\no fg
+                if 1 in u_classes:
+                    class_weights[0] = 0.
+                else:
+                    class_weights[1] = 0.
+            elif not len(class_weights):
+                class_weights[0] = 0.
+                class_weights[1] = 0.
+
+            sw_valid = np.ones(y.shape)
+            np.putmask(sw_valid, Y[n]==0, class_weights[0]) # background weights
+            np.putmask(sw_valid, F[n], class_weights[1]) # foreground wegihts 
+            np.putmask(sw_valid, Y[n]==n_classes, 0)
+            F_SW[n] = sw_valid
+            X[n] = image    
+
+            # Create adaptive pixels weights
+            filt_y = y[y!=n_classes]
+            u_classes = np.unique(filt_y)
+            if len(u_classes):
+                class_weights = class_weight.compute_class_weight('balanced', u_classes, filt_y)
+                class_weights = {class_id : w for class_id, w in zip(u_classes, class_weights)}
+            class_weights[n_classes] = 0.
+            for yy in u_classes:
+                np.putmask(SW[n], y==yy, class_weights[yy])
+                
+            np.putmask(SW[n], y==n_classes, 0)   
+
+        sample_dict = {'pred_mask' : self.SW}
+        yield (X, Y, sample_dict)
+
 class SegmentationGenerator(Sequence):
     
     def __init__(self, folder='/vinai/hoanganh/coco2017/', mode='train', n_classes=183, batch_size=16, resize_shape=None, 
@@ -470,10 +567,11 @@ class SegmentationGenerator(Sequence):
             self.image_list, self.label_list = map(list, zip(*pickle.load(open(os.path.join(self.folder, 'train_images_' + str(self.part%self.num_training_part + 1) + '_255.pkl'), 'rb'))))
         else:
             # c = list(zip(self.image_path_list, self.label_path_list))
-            c = list(zip(self.image_list, self.label_list))
-            random.shuffle(c)
+            # c = list(zip(self.image_list, self.label_list))
+            # random.shuffle(c)
             # self.image_path_list, self.label_path_list = zip(*c)
-            self.image_list, self.label_list = zip(*c)
+            # self.image_list, self.label_list = zip(*c)
+            print("\n NOT IN TRAINING MODE")
     
 def _random_crop(image, label, crop_shape):
     if (image.shape[0] != label.shape[0]) or (image.shape[1] != label.shape[1]):
@@ -503,10 +601,14 @@ def build_callbacks(tf_board = False):
         callbacks = [checkpointer, reduce_lr, stop_train]
     return callbacks
 
+def load_data(i):
+    image_list, label_list = map(list, zip(*pickle.load(open(os.path.join(PATH, 'train_images_' + str(i) + '_255.pkl'), 'rb'))))
+    return image_list, label_list
+
 if __name__ == '__main__':
 
     image_size = (256, 256) #(512,512) (720, 1280)
-    bs = 20
+    batch_size = 10
 
     better_model = False
     load_pretrained_weights = False
@@ -518,7 +620,7 @@ if __name__ == '__main__':
 
     NET = 'deeplab_' + backbone
     PATH = '/vinai/hoanganh/coco2017/'
-
+    NUM_TRAINING_PART = 8
     n_classes = 183
 
     print('Num workers:', workers)
@@ -526,33 +628,33 @@ if __name__ == '__main__':
     print('Path to dataset:', PATH)
     print('N classes:', n_classes)
     print('Image size:', image_size)
-    print('Batch size:', bs)
-    mirrored_strategy = tf.distribute.MirroredStrategy()
-    with mirrored_strategy.scope():
-        SegClass = SegModel(PATH, image_size)
-        SegClass.set_batch_size(bs)
-        
-        if better_model:
-            model = SegClass.create_seg_model(net='subpixel', n=n_classes, \
-                                            multi_gpu=True, backbone=backbone)
-        else:
-            model = SegClass.create_seg_model(net='original', n=n_classes,\
-                                            multi_gpu=True, backbone=backbone)
+    print('Batch size:', batch_size)
+    # mirrored_strategy = tf.distribute.MirroredStrategy()
+    # with mirrored_strategy.scope():
+    SegClass = SegModel(PATH, image_size)
+    SegClass.set_batch_size(batch_size)
+    
+    if better_model:
+        model = SegClass.create_seg_model(net='subpixel', n=n_classes, \
+                                        multi_gpu=True, backbone=backbone)
+    else:
+        model = SegClass.create_seg_model(net='original', n=n_classes,\
+                                        multi_gpu=True, backbone=backbone)
 
-        # model.load_weights(SegClass.modelpath)
-        # model.summary()
-        model.compile(optimizer = Adam(lr=1e-3, epsilon=1e-8, decay=1e-6), sample_weight_mode = "temporal",
-                    loss = losses, metrics = metrics)
-        print('Weights path:', SegClass.modelpath)
+    # model.load_weights(SegClass.modelpath)
+    # model.summary()
+    model.compile(optimizer = Adam(lr=1e-3, epsilon=1e-8, decay=1e-6), sample_weight_mode = "temporal",
+                loss = losses, metrics = metrics)
+    print('Weights path:', SegClass.modelpath)
 
     # train_generator = SegClass.create_generators(blur=5,crop_shape=None, mode='train_1', n_classes=n_classes,
     #                                              horizontal_flip=True, vertical_flip=False, brightness=0.3, 
     #                                              rotation=False, zoom=0.1, validation_split=.15, seed=7, do_ahisteq=False)
 
-    valid_generator = SegClass.create_generators(blur=0, crop_shape=None, mode='val', 
-                                                n_classes=n_classes, horizontal_flip=True, vertical_flip=False, 
-                                                brightness=.1, rotation=False, zoom=.05, validation_split=.15, 
-                                                seed=7, do_ahisteq=False)
+    # valid_generator = SegClass.create_generators(blur=0, crop_shape=None, mode='val', 
+    #                                             n_classes=n_classes, horizontal_flip=True, vertical_flip=False, 
+    #                                             brightness=.1, rotation=False, zoom=.05, validation_split=.15, 
+    #                                             seed=7, do_ahisteq=False)
 
     monitor = 'Jaccard'
     mode = 'max'
@@ -577,8 +679,23 @@ if __name__ == '__main__':
     #                                                 rotation=False, zoom=0.1, validation_split=.15, seed=7, do_ahisteq=False)
     #     SegClass.set_num_epochs(2)
     #     history = SegClass.train_generator(model, train_generator, valid_generator, callbacks, mp = True)
-    train_generator = SegClass.create_generators(blur=5,crop_shape=None, mode='train', n_classes=n_classes,
-                                                horizontal_flip=True, vertical_flip=False, brightness=0.3, 
-                                                rotation=False, zoom=0.1, validation_split=.15, seed=7, do_ahisteq=False)
-    SegClass.set_num_epochs(1000)
-    history = SegClass.train_generator(model, train_generator, valid_generator, callbacks, mp = False)
+    # train_generator = SegClass.create_generators(blur=5,crop_shape=None, mode='train', n_classes=n_classes,
+    #                                             horizontal_flip=True, vertical_flip=False, brightness=0.3, 
+    #                                             rotation=False, zoom=0.1, validation_split=.15, seed=7, do_ahisteq=False)
+    # SegClass.set_num_epochs(1000)
+    # history = SegClass.train_generator(model, train_generator, valid_generator, callbacks, mp = False)
+    images_val, gt_images_val = map(list, zip(*pickle.load(open(os.path.join(PATH, 'val_images_255.pkl'), 'rb'))))
+    
+    for i in range(100):
+        print("\nLoading training part " + str(i%NUM_TRAINING_PART + 1))
+        images, gt_images = load_data(i%NUM_TRAINING_PART + 1)
+        model.fit_generator(generator=image_batch_generator(images, gt_images, batch_size, mode='train'),
+                        steps_per_epoch=len(images)//batch_size,
+                        epochs=2,
+                        verbose=1,
+                        validation_data=image_batch_generator(images_val, gt_images_val, batch_size, mode='val'),
+                        validation_steps=len(images_val)//batch_size,
+                        callbacks=callbacks,
+                        max_queue_size=10, 
+                        workers=workers)
+        del images, gt_images
