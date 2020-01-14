@@ -469,7 +469,7 @@ if __name__ == '__main__':
         model = SegClass.create_seg_model(net='original', n=n_classes,\
                                         multi_gpu=True, backbone=backbone)
 
-    # model.load_weights(SegClass.modelpath)
+    model.load_weights(SegClass.modelpath)
     # model.summary()
     model.compile(optimizer = Adam(lr=1e-3, epsilon=1e-8, decay=1e-6), sample_weight_mode = "temporal",
                 loss = losses, metrics = metrics)
