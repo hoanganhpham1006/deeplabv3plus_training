@@ -392,7 +392,7 @@ def image_batch_generator(images, gt_images, batch_size, mode='train'):
             np.putmask(SW[n], y==n_classes, 0)   
 
         sample_dict = {'pred_mask' : SW}
-        yield (X, Y, sample_dict)
+        yield (X/255., Y, sample_dict)
     
 def _random_crop(image, label, crop_shape):
     if (image.shape[0] != label.shape[0]) or (image.shape[1] != label.shape[1]):
@@ -451,16 +451,16 @@ if __name__ == '__main__':
     print('Image size:', image_size)
     print('Batch size:', batch_size)
 
-    config = tf.compat.v1.ConfigProto(gpu_options = 
-                        tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.9)
-        # device_count = {'GPU': 1}
-        )
-    config.gpu_options.allow_growth = True
-    session = tf.compat.v1.Session(config=config)
-    tf.compat.v1.keras.backend.set_session(session)
+    # config = tf.compat.v1.ConfigProto(gpu_options = 
+    #                     tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.9)
+    #     # device_count = {'GPU': 1}
+    #     )
+    # config.gpu_options.allow_growth = True
+    # session = tf.compat.v1.Session(config=config)
+    # tf.compat.v1.keras.backend.set_session(session)
 
-    SegClass = SegModel(PATH, image_size)
-    SegClass.set_batch_size(batch_size)
+    # SegClass = SegModel(PATH, image_size)
+    # SegClass.set_batch_size(batch_size)
     
     if better_model:
         model = SegClass.create_seg_model(net='subpixel', n=n_classes, \
